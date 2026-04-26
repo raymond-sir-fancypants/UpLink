@@ -12,15 +12,15 @@
  * @fires ConnectionMonitor#ping
  *
  * @example
- * import CoMan from './ConnectionMonitor.js';
+ * import CoMon from './ConnectionMonitor.js';
  *
- * CoMan.watchNetwork();
+ * CoMon.watchNetwork();
  *
- * CoMan.addEventListener('ping', (e) => {
+ * CoMon.addEventListener('ping', (e) => {
  *   console.log(e.detail.condition); // "Excellent", "Good", "Slow" etc.
  * });
  *
- * CoMan.addEventListener('offline', () => {
+ * CoMon.addEventListener('offline', () => {
  *   console.log('Lost connection');
  * });
  */
@@ -310,6 +310,6 @@ class ConnectionMonitor extends EventTarget {
     }
 }
 
-const CoMan = new ConnectionMonitor();
-Object.freeze(CoMan);
-export default CoMan;
+const CoMon = new ConnectionMonitor();
+Object.freeze(CoMon);
+export default CoMon;
