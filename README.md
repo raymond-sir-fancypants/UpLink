@@ -9,6 +9,7 @@ Unlike `navigator.onLine` and the native `online`/`offline` window events — wh
 ## Features
 
 - ✅ Real connectivity detection via active pinging
+- 🔒 Fully encapsulated state — enforced by private class fields
 - 📶 Signal strength expressed as bars (0–5) and named conditions
 - ⚡ Latency and jitter tracking over a rolling window
 - 🔁 Adaptive polling — backs off when the connection is stable
@@ -23,7 +24,7 @@ Unlike `navigator.onLine` and the native `online`/`offline` window events — wh
 Just copy `ConnectionMonitor.js` into your project and import it:
 
 ```js
-import CoMon from './ConnectionMonitor.js';
+import CoMan from './ConnectionMonitor.js';
 ```
 
 ---
@@ -33,14 +34,14 @@ import CoMon from './ConnectionMonitor.js';
 ### Start monitoring
 
 ```js
-CoMon.watchNetwork();
+CoMan.watchNetwork();
 ```
 
 ### Listen for events
 
 ```js
 // Fires on every ping cycle
-CoMon.addEventListener('ping', (e) => {
+CoMan.addEventListener('ping', (e) => {
   console.log(e.detail.condition);   // "Excellent", "Good", "Slow" etc.
   console.log(e.detail.latency);     // average latency in ms
   console.log(e.detail.bars);        // 0 to 5
@@ -50,12 +51,12 @@ CoMon.addEventListener('ping', (e) => {
 });
 
 // Fires when connectivity is lost
-CoMon.addEventListener('offline', () => {
+CoMan.addEventListener('offline', () => {
   console.log('Connection lost');
 });
 
 // Fires when connectivity is restored
-CoMon.addEventListener('online', () => {
+CoMan.addEventListener('online', () => {
   console.log('Back online');
 });
 ```
@@ -63,7 +64,7 @@ CoMon.addEventListener('online', () => {
 ### Stop monitoring
 
 ```js
-CoMon.stopWatchingNetwork();
+CoMan.stopWatchingNetwork();
 ```
 
 ---
@@ -103,7 +104,7 @@ CoMon.stopWatchingNetwork();
 
 ### Events
 
-All events are fired on the `CoMon` instance.
+All events are fired on the `CoMan` instance.
 
 #### `ping`
 Fired on every polling cycle. The `event.detail` object contains:
@@ -133,7 +134,7 @@ By default, ConnectionMonitor pings Google DNS (`https://dns.google/resolve?name
 const monitor = new ConnectionMonitor('https://your-server.com/ping');
 ```
 
-Note: the exported `CoMon` singleton uses the default server. Instantiate the class directly if you need a custom one.
+Note: the exported `CoMan` singleton uses the default server. Instantiate the class directly if you need a custom one.
 
 ---
 

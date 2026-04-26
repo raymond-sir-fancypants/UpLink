@@ -12,15 +12,15 @@
  * @fires ConnectionMonitor#ping
  *
  * @example
- * import CoMon from './ConnectionMonitor.js';
+ * import CoMan from './ConnectionMonitor.js';
  *
- * CoMon.watchNetwork();
+ * CoMan.watchNetwork();
  *
- * CoMon.addEventListener('ping', (e) => {
+ * CoMan.addEventListener('ping', (e) => {
  *   console.log(e.detail.condition); // "Excellent", "Good", "Slow" etc.
  * });
  *
- * CoMon.addEventListener('offline', () => {
+ * CoMan.addEventListener('offline', () => {
  *   console.log('Lost connection');
  * });
  */
@@ -35,10 +35,10 @@ class ConnectionMonitor extends EventTarget {
         super();
 
         /** @type {string} */
-        this.server = server;
+        #server = server;
 
         /** @type {string[]} */
-        this.networkStatuses = ["Excellent", "Good", "Slow", "Bad", "Unacceptable", "Offline", "Unknown"];
+        #networkStatuses = ["Excellent", "Good", "Slow", "Bad", "Unacceptable", "Offline", "Unknown"];
 
         /**
          * Rolling window of the last 10 latency measurements in ms.
@@ -47,39 +47,39 @@ class ConnectionMonitor extends EventTarget {
          * @type {number[]}
          * @private
          */
-        this.__latency = [100];
+        #__latency = [100];
 
         /** @type {boolean} */
-        this.onlineStatus = navigator.onLine;
+        #onlineStatus = navigator.onLine;
 
         /** @type {string} */
-        this.networkCondition = "Slow";
+        #networkCondition = "Slow";
 
         /**
          * Signal bars from 0 (offline) to 5 (excellent).
          * @type {number}
          */
-        this.bars = 3;
+        #bars = 3;
 
         /** @type {boolean} */
-        this.watchingNetwork = false;
+        #watchingNetwork = false;
 
         /**
          * True if monitoring was paused due to the tab becoming hidden.
          * Used to auto-resume when the tab becomes visible again.
          * @type {boolean}
          */
-        this.visibilityBlock = false;
+        #visibilityBlock = false;
 
         /**
          * Interval between pings in ms. Backs off from 1000 → 3000 → 5000
          * as the connection stabilises, to reduce unnecessary requests.
          * @type {number}
          */
-        this.refreshIntervalTime = 1000;
+        #refreshIntervalTime = 1000;
 
         /** @type {string[]} */
-        this.stabilityLog = [];
+        #stabilityLog = [];
 
         // Pause monitoring if the tab is already hidden on construction
         if (document.hidden && this.watchingNetwork) {
@@ -310,6 +310,6 @@ class ConnectionMonitor extends EventTarget {
     }
 }
 
-const CoMon = new ConnectionMonitor();
-Object.freeze(CoMon);
-export default CoMon;
+const CoMan = new ConnectionMonitor();
+Object.freeze(CoMan);
+export default CoMan;
