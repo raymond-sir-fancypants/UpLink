@@ -1,5 +1,5 @@
 "use strict"
-//V2.0.0
+//V2.0.1
 class Utility {
     static isPlainObject(value) {
         return Object.prototype.toString.call(value) === '[object Object]';
@@ -91,7 +91,7 @@ class Monitor extends EventTarget {
 
     #fetchAbortController;
 
-    #pollingNetwork = true;
+    #pollingNetwork = false;
 
     #pollingPausedByVisibilityListener = false;
 
@@ -118,12 +118,18 @@ class Monitor extends EventTarget {
     #mainAbortController;
 
     #forceTimeOutOnNetworkRequest;
+
+    #nativeEventBufferOffline = false;
+
+    #nativeEventBufferOnline = false;
+
     constructor() {
         super();
         this.startPollingNetwork();
     };
 
     startPollingNetwork() {
+        if (this.#pollingNetwork) return;
         this.#mainAbortController = new AbortController();
 
         this.#pollingNetwork = true;
@@ -144,6 +150,35 @@ class Monitor extends EventTarget {
                     this.#pollingPausedByVisibilityListener = true;
                 };
             };
+        }, { signal: this.#mainAbortController.signal });
+
+        window.addEventListener("offline", () => {
+
+            if (this.#nativeEventBufferOffline) return;
+
+            this.#nativeEventBufferOffline = true;
+
+            setTimeout(() => {
+                this.#nativeEventBufferOffline = false;
+            }, 2000);
+
+            this.stopPollingNetwork();
+            this.startPollingNetwork()
+        }, { signal: this.#mainAbortController.signal });
+
+        window.addEventListener("online", () => {
+
+            if (this.#nativeEventBufferOnline) return;
+
+            this.#nativeEventBufferOnline = true;
+
+            setTimeout(() => {
+                this.#nativeEventBufferOnline = false;
+            }, 2000);
+
+            this.stopPollingNetwork();
+            this.startPollingNetwork()
+
         }, { signal: this.#mainAbortController.signal });
 
         this.#pollingHandler();
@@ -196,7 +231,7 @@ class Monitor extends EventTarget {
     get reliability() {
         if (this.#latencyLog.length === 0) return 0;
 
-        const successRate = (this.#latencyLog.filter(v => v !== this.#latencyThresholds.degraded && v !== Infinity).length / this.#latencyLog.length) * 100;
+        const successRate = (this.#latencyLog.filter(v => v !== Infinity).length / this.#latencyLog.length) * 100;
         const jitterFactor = Math.max(0, 100 - (this.jitter / 10));
         return Math.round((successRate * 0.7) + (jitterFactor * 0.3));
     }

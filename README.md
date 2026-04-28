@@ -6,27 +6,12 @@ Unlike `navigator.onLine` and the native `online`/`offline` window events — wh
 
 ---
 
-## What's new in v2.0.0
+## What's new in v2.0.1
 
-> ⚠️ v2.0.0 contains breaking changes from v1.x. See the migration notes below.
-
-- **Dual endpoint fallback** — if the main endpoint times out, UpLink silently switches to a backup and checks every 5 minutes for the main to recover. Switching back happens automatically.
-- **Configurable latency thresholds** — override the ms values used to classify the connection quality.
-- **Configurable polling intervals** — control how aggressively UpLink polls at each stability phase.
-- **Configurable endpoints** — use your own servers instead of the defaults.
-- **Richer network condition states** — each state now has a `label`, `alias`, and machine-readable `code`.
-- **`config()` is one-time only** — calling it more than once throws, preventing accidental re-initialisation.
-- **`silenceWarnings` option** — suppress low-threshold console warnings in production.
-
-### Migration from v1.x
-
-| v1.x | v2.0.0 |
-|---|---|
-| `CoMon.watchNetwork()` | `UpLink.startPollingNetwork()` |
-| `CoMon.stopWatchingNetwork()` | `UpLink.stopPollingNetwork()` |
-| `networkCondition` (string) | `networkCondition` (object with `label`, `alias`, `code`) |
-| Single endpoint | Dual endpoint with automatic fallback |
-| No config validation | Strict config validation with `UpLinkError` |
+- **Native event hybrid monitoring** — UpLink now listens to the browser's native `online` and `offline` window events as early-warning signals. When either fires, UpLink immediately restarts its polling loop to run a confirmation ping ahead of the next scheduled cycle — catching outages faster without relying solely on the timer.
+- **Debounce buffers** — separate 2-second debounce buffers on the `online` and `offline` native events prevent flickering connections from triggering repeated restarts. Kept separate so a genuine rapid offline → online transition is never masked.
+- **Duplicate polling guard** — `startPollingNetwork()` now returns immediately if polling is already running, preventing duplicate loops.
+- **Simplified `reliability` scoring** — the success rate now counts any ping that did not fail outright. High-latency pings are treated as successes — only complete failures (`Infinity`) penalise the score.
 
 ---
 
@@ -35,6 +20,7 @@ Unlike `navigator.onLine` and the native `online`/`offline` window events — wh
 - 📦 Zero dependencies
 - 🔒 Fully encapsulated state — enforced by private class fields
 - 🌐 Dual endpoint with automatic fallback and recovery
+- 📡 Hybrid monitoring — active polling confirmed by native browser events
 - 📶 Signal bars (0–5) and named condition states
 - ⚡ Latency, jitter, and reliability tracking over a rolling 10-ping window
 - 🔋 Tab-aware — pauses when the tab is hidden, resumes when visible
@@ -142,9 +128,9 @@ Configures UpLink. **Call once, before anything else.**
 
 | Option | Type | Description |
 |---|---|---|
-| `endPoints` | `Object` | Custom polling endpoints (see below) |
-| `latencyThresholds` | `Object` | Override ms thresholds for condition classification (see below) |
-| `pollingIntervals` | `Object` | Override polling interval durations in ms (see below) |
+| `endPoints` | `Object` | Custom polling endpoints |
+| `latencyThresholds` | `Object` | Override ms thresholds for condition classification |
+| `pollingIntervals` | `Object` | Override polling interval durations in ms |
 | `silenceWarnings` | `boolean` | Suppress console warnings about unusually low thresholds |
 
 #### `endPoints`
@@ -152,8 +138,8 @@ Configures UpLink. **Call once, before anything else.**
 ```js
 UpLink.config({
   endPoints: {
-    main: 'https://my-server.com/ping',       // primary endpoint
-    backup: 'https://dns.google/resolve?name=.&type=NS' // fallback
+    main: 'https://my-server.com/ping',
+    backup: 'https://dns.google/resolve?name=.&type=NS'
   }
 });
 ```
@@ -165,26 +151,26 @@ Both endpoints must support `no-cors` fetch mode. If `main` times out, UpLink au
 ```js
 UpLink.config({
   latencyThresholds: {
-    optimal: 80,      // below 80ms   → Optimal  (5 bars)
-    stable: 200,      // below 200ms  → Stable   (4 bars)
+    optimal: 80,      // below 80ms   → Optimal      (5 bars)
+    stable: 200,      // below 200ms  → Stable       (4 bars)
     highLatency: 400, // below 400ms  → High Latency (3 bars)
-    degraded: 600     // below 600ms  → Degraded (2 bars)
-                      // above 600ms  → Critical (1 bar)
+    degraded: 600     // below 600ms  → Degraded     (2 bars)
+                      // above 600ms  → Critical     (1 bar)
                       // Infinity     → Disconnected (0 bars)
   }
 });
 ```
 
-Values must be in **strictly ascending order**. Values ≤ 10ms throw a `CONFIG_ERR` (physically impossible over a network). Values ≤ 30ms log a warning unless `silenceWarnings: true`.
+Values must be in **strictly ascending order**. Values ≤ 10ms throw a `CONFIG_ERR`. Values ≤ 30ms log a warning unless `silenceWarnings: true`.
 
 #### `pollingIntervals`
 
 ```js
 UpLink.config({
   pollingIntervals: {
-    unstable: 2000,    // used when condition is changing (default: 2000ms)
-    stabilising: 5000, // used after 10 same-condition pings (default: 4000ms)
-    stable: 10000      // used after 20 same-condition pings (default: 6000ms)
+    unstable: 2000,    // condition changing (default: 2000ms)
+    stabilising: 5000, // after 10 same-condition pings (default: 4000ms)
+    stable: 10000      // after 20 same-condition pings (default: 6000ms)
   }
 });
 ```
@@ -195,13 +181,20 @@ Minimum allowed value is **500ms** to prevent network flooding.
 
 ### `UpLink.startPollingNetwork()`
 
-Starts the polling loop. Called automatically on import and after `config()`. You can also call it manually to resume after `stopPollingNetwork()`.
+Starts the polling loop and attaches the `visibilitychange`, `offline`, and `online`
+listeners. If polling is already running, this call is silently ignored — no duplicate
+loops can be created.
+
+Called automatically on import and after `config()`. You can also call it manually
+to resume after `stopPollingNetwork()`.
 
 ---
 
 ### `UpLink.stopPollingNetwork()`
 
-Stops the polling loop, cancels all pending fetches and timers, and removes the tab visibility listener. Useful for cleaning up or pausing monitoring manually.
+Stops the polling loop, cancels all pending fetches and timers, and removes the
+`visibilitychange`, `offline`, and `online` listeners by aborting the shared
+`AbortController`. No event listener leaks.
 
 ---
 
@@ -251,8 +244,6 @@ All properties are read-only getters backed by private fields.
 | Disconnected | 0 | `"Disconnected"` | `"Offline"` | `"NET_OFFLINE"` | Infinity |
 | Syncing | — | `"Syncing"` | `"Calculating"` | `"NET_PENDING"` | Initial state |
 
-The `label` is the full descriptive name. The `alias` is a shorter alternative. The `code` is for programmatic comparisons:
-
 ```js
 UpLink.addEventListener("ping", (e) => {
   if (e.detail.condition.code === "NET_OFFLINE") {
@@ -269,7 +260,7 @@ All events fire on the `UpLink` instance.
 
 ### `ping`
 
-Fires on every polling cycle. The `event.detail` object contains:
+Fires on every polling cycle.
 
 | Key | Type | Description |
 |---|---|---|
@@ -282,17 +273,17 @@ Fires on every polling cycle. The `event.detail` object contains:
 
 ### `online`
 
-Fires once when connectivity is restored after being lost.
+Fires once when connectivity is restored after being lost. Triggered by a confirmed successful ping — not by the native browser event alone.
 
 ### `offline`
 
-Fires once when connectivity is lost.
+Fires once when connectivity is lost. Triggered by a confirmed failed ping — not by the native browser event alone.
 
 ---
 
 ## Adaptive Polling
 
-UpLink automatically backs off the polling interval as the connection proves consistent, reducing unnecessary network requests:
+UpLink automatically backs off the polling interval as the connection proves consistent:
 
 | Phase | Trigger | Default interval |
 |---|---|---|
@@ -301,6 +292,18 @@ UpLink automatically backs off the polling interval as the connection proves con
 | Stable | 20 consecutive same-condition pings | 6000ms |
 
 The interval resets to `unstable` whenever the condition changes.
+
+---
+
+## How It Works
+
+**Active polling:** On every cycle, UpLink fetches a lightweight endpoint. The request is force-aborted after 3.5 seconds — if it times out, the endpoint switches to the backup and a background timer checks every 5 minutes whether the main endpoint has recovered.
+
+**Native event hybrid:** UpLink also listens to the browser's native `online` and `offline` window events. These events are unreliable as a source of truth but useful as early-warning signals — they often fire before the next polling cycle would catch a change. When either fires, UpLink immediately restarts its loop to run a confirmation ping. A 2-second debounce on each event prevents flickering from causing repeated restarts. The `online` and `offline` buffers are kept separate so a genuine rapid offline → online transition is never masked.
+
+**Rolling window:** The latency of each successful ping is added to a rolling 10-item window. The window average determines the condition and bars, smoothing out individual spikes and preventing rapid condition flickering.
+
+**Tab awareness:** Polling pauses when the tab is hidden and resumes when it becomes visible. The `visibilitychange`, `offline`, and `online` listeners all share a single `AbortController` signal and are cleaned up together whenever polling stops.
 
 ---
 
@@ -323,16 +326,6 @@ try {
   console.log(e.message); // "impossible latency value set for 'optimal'..."
 }
 ```
-
----
-
-## How It Works
-
-On every polling cycle, UpLink fetches a lightweight endpoint. The request is forced to abort after 3.5 seconds — if it times out, the endpoint switches to the backup and a background timer checks every 5 minutes whether the main endpoint has recovered. When it does, polling switches back automatically.
-
-The latency of each successful ping is added to a rolling 10-item window. The average of that window determines the condition and bars. This smooths out individual spikes and prevents rapid condition flickering.
-
-Polling pauses automatically when the browser tab is hidden and resumes when the tab becomes visible again.
 
 ---
 

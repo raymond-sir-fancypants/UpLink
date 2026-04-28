@@ -1,6 +1,6 @@
 "use strict"
 
-// UpLink v2.0.0
+// UpLink v2.0.1
 
 /**
  * @class Utility
@@ -64,6 +64,12 @@ class UpLinkError extends Error {
  * which only detect whether a network interface is available — not whether
  * the internet is actually reachable.
  *
+ * As of v2.0.1, UpLink also listens to the native `online` and `offline`
+ * window events as early-warning signals. When they fire, UpLink immediately
+ * restarts its polling loop to run a confirmation ping ahead of the next
+ * scheduled cycle. A 2-second debounce buffer on each event prevents
+ * flickering connections from triggering repeated restarts.
+ *
  * On construction, polling starts immediately with default settings.
  *
  * ---
@@ -97,8 +103,16 @@ class UpLinkError extends Error {
  *
  * **Tab visibility:**
  * Polling automatically pauses when the browser tab is hidden and resumes
- * when the tab becomes visible again, avoiding unnecessary network requests
- * in the background.
+ * when the tab becomes visible again, avoiding unnecessary background requests.
+ *
+ * ---
+ *
+ * **Listener lifetime:**
+ * The `visibilitychange`, `offline`, and `online` listeners all share the
+ * same `AbortController` signal. When `stopPollingNetwork()` is called — whether
+ * manually or triggered by a native event — all three listeners are removed
+ * automatically. `startPollingNetwork()` then creates a fresh controller and
+ * re-attaches them.
  *
  * @fires Monitor#ping
  * @fires Monitor#online
@@ -204,16 +218,16 @@ class Monitor extends EventTarget {
 
     /**
      * Average latency thresholds in ms used to classify the connection.
-     * Configurable via `config()`. Must be set in ascending order.
+     * Configurable via `config()`. Must be set in strictly ascending order.
      *
-     * | Key           | Default | Meaning                          |
-     * |---------------|---------|----------------------------------|
-     * | `optimal`     | 100ms   | Below this → Optimal (5 bars)    |
-     * | `stable`      | 250ms   | Below this → Stable (4 bars)     |
-     * | `highLatency` | 500ms   | Below this → High Latency (3 bars)|
-     * | `degraded`    | 700ms   | Below this → Degraded (2 bars)   |
-     * | Above degraded|         | Critical (1 bar)                 |
-     * | Infinity      |         | Disconnected (0 bars)            |
+     * | Key           | Default | Meaning                            |
+     * |---------------|---------|------------------------------------|
+     * | `optimal`     | 100ms   | Below this → Optimal  (5 bars)     |
+     * | `stable`      | 250ms   | Below this → Stable   (4 bars)     |
+     * | `highLatency` | 500ms   | Below this → High Latency (3 bars) |
+     * | `degraded`    | 700ms   | Below this → Degraded (2 bars)     |
+     * | Above degraded|         | Critical (1 bar)                   |
+     * | Infinity      |         | Disconnected (0 bars)              |
      *
      * @type {{ optimal: number, stable: number, highLatency: number, degraded: number }}
      * @private
@@ -231,8 +245,14 @@ class Monitor extends EventTarget {
     /** @type {AbortController} Used to cancel the active fetch request. @private */
     #fetchAbortController;
 
-    /** @type {boolean} Whether the polling loop is currently running. @private */
-    #pollingNetwork = true;
+    /**
+     * Whether the polling loop is currently running.
+     * Initialised as `false` so `startPollingNetwork()` can safely run on
+     * construction without the guard blocking it.
+     * @type {boolean}
+     * @private
+     */
+    #pollingNetwork = false;
 
     /** @type {boolean} Whether polling was paused due to tab visibility. Used to auto-resume. @private */
     #pollingPausedByVisibilityListener = false;
@@ -274,11 +294,30 @@ class Monitor extends EventTarget {
     /** @type {boolean} Current online status. Initialised from `navigator.onLine`. @private */
     #online = navigator.onLine;
 
-    /** @type {AbortController} Controls the visibilitychange event listener lifetime. @private */
+    /** @type {AbortController} Controls the lifetime of the visibilitychange, offline, and online listeners. @private */
     #mainAbortController;
 
     /** @type {number} Timeout ID for the per-request force-abort timer. @private */
     #forceTimeOutOnNetworkRequest;
+
+    /**
+     * Debounce flag for the native `offline` window event.
+     * When `true`, further `offline` events are ignored for 2 seconds.
+     * Prevents flickering connections from triggering repeated restarts.
+     * @type {boolean}
+     * @private
+     */
+    #nativeEventBufferOffline = false;
+
+    /**
+     * Debounce flag for the native `online` window event.
+     * When `true`, further `online` events are ignored for 2 seconds.
+     * Kept separate from the offline buffer so a genuine rapid
+     * offline → online transition is never masked.
+     * @type {boolean}
+     * @private
+     */
+    #nativeEventBufferOnline = false;
 
     constructor() {
         super();
@@ -286,12 +325,22 @@ class Monitor extends EventTarget {
     }
 
     /**
-     * Starts the polling loop and attaches the tab visibility listener.
+     * Starts the polling loop and attaches the tab visibility, `offline`,
+     * and `online` listeners. All three listeners share a single
+     * `AbortController` signal and are automatically removed when
+     * `stopPollingNetwork()` is called.
+     *
+     * If polling is already running (`#pollingNetwork === true`), this method
+     * returns immediately — preventing duplicate polling loops.
+     *
      * Called automatically on construction and after `config()` completes.
      * Safe to call manually to resume polling after `stopPollingNetwork()`.
+     *
      * @returns {void}
      */
     startPollingNetwork() {
+        if (this.#pollingNetwork) return; // Guard — prevent duplicate polling loops
+
         this.#mainAbortController = new AbortController();
         this.#pollingNetwork = true;
 
@@ -301,7 +350,7 @@ class Monitor extends EventTarget {
             this.#pollingPausedByVisibilityListener = true;
         }
 
-        // Pause when hidden, resume when visible
+        // Pause when tab is hidden, resume when visible again
         document.addEventListener("visibilitychange", () => {
             if (document.visibilityState === 'visible') {
                 if (this.#pollingPausedByVisibilityListener) {
@@ -315,12 +364,40 @@ class Monitor extends EventTarget {
             }
         }, { signal: this.#mainAbortController.signal });
 
+        // Native offline event — use as an early-warning trigger.
+        // Immediately restarts the polling loop to run a confirmation ping
+        // ahead of the next scheduled cycle. Debounced to 2 seconds to
+        // prevent flickering connections from causing repeated restarts.
+        window.addEventListener("offline", () => {
+            if (this.#nativeEventBufferOffline) return;
+
+            this.#nativeEventBufferOffline = true;
+            setTimeout(() => { this.#nativeEventBufferOffline = false; }, 2000);
+
+            this.stopPollingNetwork();
+            this.startPollingNetwork();
+        }, { signal: this.#mainAbortController.signal });
+
+        // Native online event — same early-warning approach as offline.
+        // Kept as a separate buffer so a genuine rapid offline → online
+        // transition is never masked by the offline buffer.
+        window.addEventListener("online", () => {
+            if (this.#nativeEventBufferOnline) return;
+
+            this.#nativeEventBufferOnline = true;
+            setTimeout(() => { this.#nativeEventBufferOnline = false; }, 2000);
+
+            this.stopPollingNetwork();
+            this.startPollingNetwork();
+        }, { signal: this.#mainAbortController.signal });
+
         this.#pollingHandler();
     }
 
     /**
      * Stops the polling loop, cancels all pending timeouts and fetches,
-     * and removes the visibility listener.
+     * and removes the `visibilitychange`, `offline`, and `online` listeners
+     * by aborting the shared `AbortController`.
      * @returns {void}
      */
     stopPollingNetwork() {
@@ -374,7 +451,7 @@ class Monitor extends EventTarget {
      * Average variation between consecutive latency readings in ms.
      * High jitter indicates an unstable connection.
      * Returns `0` if fewer than 2 readings are available.
-     * Returns `5000` if all available pairs include a failed ping.
+     * Returns `5000` if all available consecutive pairs include a failed ping.
      * @type {number}
      */
     get jitter() {
@@ -390,14 +467,19 @@ class Monitor extends EventTarget {
 
     /**
      * A 0–100 reliability score based on ping success rate (70%) and
-     * jitter stability (30%). Returns `0` if no pings have been recorded.
+     * jitter stability (30%).
+     *
+     * The success rate counts any ping that did not fail outright (i.e. any
+     * entry that is not `Infinity`). High-latency pings are counted as
+     * successes — only complete failures penalise this score.
+     *
+     * Returns `0` if no pings have been recorded yet.
      * @type {number}
      */
     get reliability() {
         if (this.#latencyLog.length === 0) return 0;
         const successRate = (
-            this.#latencyLog.filter(v => v !== this.#latencyThresholds.degraded && v !== Infinity).length
-            / this.#latencyLog.length
+            this.#latencyLog.filter(v => v !== Infinity).length / this.#latencyLog.length
         ) * 100;
         const jitterFactor = Math.max(0, 100 - (this.jitter / 10));
         return Math.round((successRate * 0.7) + (jitterFactor * 0.3));
@@ -424,19 +506,19 @@ class Monitor extends EventTarget {
      *   classify the connection. All values must be positive numbers in strictly
      *   ascending order. Values ≤ 10ms throw an error (physically impossible over a network).
      *   Values ≤ 30ms log a warning unless `silenceWarnings` is `true`.
-     * @param {number} [options.latencyThresholds.optimal] - Default: 100ms
-     * @param {number} [options.latencyThresholds.stable] - Default: 250ms
-     * @param {number} [options.latencyThresholds.highLatency] - Default: 500ms
-     * @param {number} [options.latencyThresholds.degraded] - Default: 700ms
+     * @param {number} [options.latencyThresholds.optimal=100]
+     * @param {number} [options.latencyThresholds.stable=250]
+     * @param {number} [options.latencyThresholds.highLatency=500]
+     * @param {number} [options.latencyThresholds.degraded=700]
      *
      * @param {Object} [options.pollingIntervals] - Override polling interval durations in ms.
      *   Minimum allowed value is 500ms to prevent network flooding.
-     * @param {number} [options.pollingIntervals.unstable] - Default: 2000ms. Used when the
-     *   condition is changing or has just changed.
-     * @param {number} [options.pollingIntervals.stabilising] - Default: 4000ms. Used after
-     *   10 consecutive pings with the same condition.
-     * @param {number} [options.pollingIntervals.stable] - Default: 6000ms. Used after
-     *   20 consecutive pings with the same condition.
+     * @param {number} [options.pollingIntervals.unstable=2000] - Used when the condition
+     *   is changing or has just changed.
+     * @param {number} [options.pollingIntervals.stabilising=4000] - Used after 10 consecutive
+     *   pings with the same condition.
+     * @param {number} [options.pollingIntervals.stable=6000] - Used after 20 consecutive
+     *   pings with the same condition.
      *
      * @param {boolean} [options.silenceWarnings=false] - Set to `true` to suppress
      *   console warnings about unusually low latency threshold values.
@@ -445,7 +527,7 @@ class Monitor extends EventTarget {
      * @throws {UpLinkError} CONFIG_ERR — if any option value is invalid.
      *
      * @example
-     * // Basic usage — call before anything else
+     * // Call before anything else
      * UpLink.config({
      *   pollingIntervals: { stable: 10000 },
      *   latencyThresholds: { optimal: 80, stable: 200, highLatency: 400, degraded: 600 }
@@ -612,7 +694,7 @@ class Monitor extends EventTarget {
 
                 clearTimeout(timeout);
 
-                // Main endpoint is back — switch back
+                // Main endpoint is back — switch back to it
                 this.#currentEndPoint.endPoint = this.#endPoints.main;
                 this.#currentEndPoint.type = "main";
 
@@ -647,7 +729,7 @@ class Monitor extends EventTarget {
                     this.#pollingHandler();
                 }, (timeoutDuration < 0) ? 0 : timeoutDuration);
             }
-        }
+        };
 
         this.#fetchAbortController = new AbortController();
 
@@ -657,7 +739,7 @@ class Monitor extends EventTarget {
                 this.#fetchAbortController.abort();
 
                 if (this.#currentEndPoint.type === "main") {
-                    // Main timed out — fall back to backup and start watching for main recovery
+                    // Main timed out — fall back to backup and watch for recovery
                     this.#currentEndPoint.endPoint = this.#endPoints.backup;
                     this.#currentEndPoint.type = "backup";
                     if (this.#checkMainEndPointTimeOutId === false) this.#checkMainEndPointForAPulse();
@@ -724,12 +806,12 @@ class Monitor extends EventTarget {
     #networkConditionCheck() {
         const avg = this.latency;
 
-        if (avg < this.#latencyThresholds.optimal)      { this.#bars = 5; this.#networkCondition = this.#networkConditionStates.optimal; }
-        else if (avg < this.#latencyThresholds.stable)       { this.#bars = 4; this.#networkCondition = this.#networkConditionStates.stable; }
-        else if (avg < this.#latencyThresholds.highLatency)  { this.#bars = 3; this.#networkCondition = this.#networkConditionStates.highLatency; }
-        else if (avg < this.#latencyThresholds.degraded)     { this.#bars = 2; this.#networkCondition = this.#networkConditionStates.degraded; }
-        else if (avg !== Infinity)                            { this.#bars = 1; this.#networkCondition = this.#networkConditionStates.critical; }
-        else                                                  { this.#bars = 0; this.#networkCondition = this.#networkConditionStates.disconnected; }
+        if (avg < this.#latencyThresholds.optimal)         { this.#bars = 5; this.#networkCondition = this.#networkConditionStates.optimal; }
+        else if (avg < this.#latencyThresholds.stable)      { this.#bars = 4; this.#networkCondition = this.#networkConditionStates.stable; }
+        else if (avg < this.#latencyThresholds.highLatency) { this.#bars = 3; this.#networkCondition = this.#networkConditionStates.highLatency; }
+        else if (avg < this.#latencyThresholds.degraded)    { this.#bars = 2; this.#networkCondition = this.#networkConditionStates.degraded; }
+        else if (avg !== Infinity)                          { this.#bars = 1; this.#networkCondition = this.#networkConditionStates.critical; }
+        else                                                { this.#bars = 0; this.#networkCondition = this.#networkConditionStates.disconnected; }
 
         if (this.#pollingNetwork) {
             this.#stabilityCheck();
@@ -738,12 +820,12 @@ class Monitor extends EventTarget {
              * Fired on every polling cycle with the latest network snapshot.
              * @event Monitor#ping
              * @type {CustomEvent}
-             * @property {boolean}  detail.online       - Current online status.
-             * @property {number}   detail.latency      - Average latency in ms (`Infinity` if offline).
-             * @property {Object}   detail.condition    - Current condition `{ label, alias, code }`.
-             * @property {number}   detail.bars         - Signal bars, 0–5.
-             * @property {number}   detail.jitter       - Average jitter in ms.
-             * @property {number}   detail.reliability  - Reliability score, 0–100.
+             * @property {boolean}  detail.online      - Current online status.
+             * @property {number}   detail.latency     - Average latency in ms (`Infinity` if offline).
+             * @property {Object}   detail.condition   - Current condition `{ label, alias, code }`.
+             * @property {number}   detail.bars        - Signal bars, 0–5.
+             * @property {number}   detail.jitter      - Average jitter in ms.
+             * @property {number}   detail.reliability - Reliability score, 0–100.
              */
             this.dispatchEvent(new CustomEvent("ping", {
                 detail: {
@@ -764,9 +846,9 @@ class Monitor extends EventTarget {
      * interval whenever the condition changes.
      *
      * Progression:
-     * - 0–10 consecutive same-condition pings → `unstable` interval
-     * - 10–20 → `stabilising` interval
-     * - 20+ → `stable` interval
+     * - 0–10 consecutive same-condition pings  → `unstable` interval
+     * - 10–20 consecutive same-condition pings → `stabilising` interval
+     * - 20+  consecutive same-condition pings  → `stable` interval
      *
      * @returns {void}
      * @private
